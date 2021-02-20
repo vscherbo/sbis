@@ -1,0 +1,12 @@
+[PG]
+pg_host = vm-pg-restore.arc.world
+pg_user = arc_energo
+
+[SBIS]
+auth_url = https://online.sbis.ru/auth/service/
+login = <user>
+password = <password>
+api_url = https://online.sbis.ru/service/?srv=1
+token = 
+created = "20.02.2021 17:09:55"
+
