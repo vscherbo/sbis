@@ -1,5 +1,6 @@
-*log
-*txt
-*tar
+*.log
+*.txt
+*.tar
+*.json
 sbis.conf
 .python-version
