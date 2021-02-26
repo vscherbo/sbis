@@ -7,6 +7,7 @@ auth_url = https://online.sbis.ru/auth/service/
 login = <user>
 password = <password>
 api_url = https://online.sbis.ru/service/?srv=1
+#? https://api.sbis.ru/spp-rest-api/service/
 token = 
 created = "20.02.2021 17:09:55"
 
