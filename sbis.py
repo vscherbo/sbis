@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 """
-Base class for online.sbis.ru
+Base classes for online.sbis.ru
 """
-#import sys
+import inspect
 import os
 import time
 from datetime import datetime
@@ -42,7 +42,7 @@ CHG_LIST = {
     "Фильтр": {
         "ИдентификаторСобытия": "",
         #"ИдентификаторСобытия": "6b563324-0305-42a6-9db3-f7a2de786db6",
-        "ДатаВремяС": "15.02.2021 00.00.00",
+        #"ДатаВремяС": "15.02.2021 00.00.00",
         #"ДатаВремяПо": "16.02.2021 23.59.59",
         "НашаОрганизация": {
             "СвЮЛ": {
@@ -172,8 +172,8 @@ class SbisAPI():
         except requests.exceptions.RequestException as exc:
             # catastrophic error. bail.
             err_msg = self.__exception_fmt__('RequestException', exc)
-        else:
-            ret = resp.json()
+        #else:
+        #    ret = resp.json()
             # logging.debug("r.text=%s", r.text)
         finally:
             if self.status_code != 200 or err_msg:
@@ -182,15 +182,6 @@ class SbisAPI():
                               self.status_code,
                               err_msg)
             ret = resp.json()
-            """
-            if err_msg:
-                logging.error(err_msg)
-                ret = {}
-                ret["answer"] = {'state': 'exception', 'err_msg': err_msg}
-            elif self.status_code != 200:
-                logging.error("sbis_post failed, status_code=%s",
-                              self.status_code)
-            """
 
         return ret
 
@@ -285,18 +276,140 @@ WHERE const_name =%s;"""
         logging.debug('update last_ts=%s', loc_sql)
         self.do_query(loc_sql, reconnect=True)
 
-    def get_chg_list(self):
+    def get_chg_list(self, page):
         """ Get changed docs list """
         loc_params = copy.deepcopy(CHG_LIST)
         logging.debug('loc_params copied=%s', loc_params)
+        """
         loc_params["Фильтр"] = {
-            #"ИдентификаторСобытия": "6b563324-0305-42a6-9db3-f7a2de786db6"
-            #"ДатаВремяС": "15.02.2021 00.00.00",
             "ИдентификаторСобытия": SBIS.last_uuid,
             "ДатаВремяС": SBIS.timestamp_from,
             }
+        """
+        if page == 0:
+            loc_params["Фильтр"]["ИдентификаторСобытия"] = SBIS.last_uuid
+            loc_params["Фильтр"]["ДатаВремяС"] = SBIS.timestamp_from
+        else:
+            loc_params["Фильтр"]["ИдентификаторСобытия"] = None
+            loc_params["Фильтр"]["ДатаВремяС"] = SBIS.timestamp_from
+            loc_params["Фильтр"]["Навигация"] = {"Страница": str(page)}
+
+        logging.debug('loc_params=%s', json.dumps(loc_params,
+                                                  ensure_ascii=False,
+                                                  indent=4))
         return self.api.req_chg_list(loc_params)
-        #return self.api.req_chg_list(loc_params, method='PRINT')
+
+    def save_chg_list(self):
+        """ Get changed docs list page by page """
+        do_loop = True
+        last_uuid = None
+        page = 0
+        while do_loop:
+            res = self.get_chg_list(page=page)
+            if res and 'result' in res.keys():
+                if res['result']['Навигация']['ЕстьЕще'] == "Да":
+                    logging.debug('nav=%s', res['result']['Навигация'])
+                    page += 1
+                    # parse json result
+                    last_uuid = self.parse_docs(res['result']['Документ'])
+                    do_loop = False # endless loop
+                else:
+                    do_loop = False
+            else:
+                do_loop = self.api.status_code == 200
+        # last doc uuid after loop end
+        if last_uuid:
+            self.last_uuid = last_uuid
+        return res
+
+    INSERT_DOC = """INSERT INTO sbis.changes(ident, doc_name, dt_create_sbis,
+doc_num, direction, inn_firm, inn_ca, doc_type, deleted)
+VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s);"""
+
+    def parse_docs(self, doc_list):
+        """ Parse docs list
+Если получено событие:
+- не по входящему или исходящему документу
+  («Документ.Направление»≠«Входящий»/«Исходящий»), пропустите его;
+- с извещением об удалении документа противоположной стороной
+  («Документ.Событие.Название»=«Уведомление об удалении на стороне отправителя»),
+  остановите документооборот и пометьте документ в вашей ИС как удаленный;
+- с запросом на аннулирование
+  («Документ.Событие.Название»=«Получение соглашения об аннулировании»),
+  предусмотрите в вашей системе возможность ответа. Для этого добавьте в систему
+  возможность запросить ответственного по документу на подтверждение/отклонение аннулирования;
+- со значением поля «Документ.Событие.Название» отличными от «Получение» — пропустите его.
+        """
+        with open('sbis-onw-{}.json'.format(time.strftime("%Y-%m-%d-%H-%M")), 'w') as outf:
+            doc = None
+            for doc in doc_list:
+                if doc["Направление"] not in {"Входящий", "Исходящий"}:
+                    logging.debug('SKIP «Документ.Направление»≠«Входящий»/«Исходящий» %s',
+                                  doc["Направление"])
+                    continue
+                """ doc["Событие"] is list!
+                if doc["Событие"]["Название"] != "Получение":
+                    logging.debug('SKIP Не "Получение" %s', doc["Событие"]["Название"])
+                    continue
+                """
+                if len(doc["Редакция"]) > 1:
+                    logging.info('WATCH Несколько редакций: doc["Редакция"]=%s',
+                                 doc["Редакция"])
+                if doc["Редакция"][0]["Актуален"] == "Да":
+                    # write to DB
+                    outf.write(json.dumps(doc, ensure_ascii=False, indent=4))
+                    loc_sql = self.curs.mogrify(self.INSERT_DOC,
+                                                (doc["Идентификатор"],
+                                                 doc["Название"],
+                                                 datetime.strptime(doc["ДатаВремяСоздания"],
+                                                                   '%d.%m.%Y %H.%M.%S'),
+                                                 doc["Номер"],
+                                                 doc["Направление"],
+                                                 doc['НашаОрганизация']['СвЮЛ']["ИНН"],
+                                                 doc['Контрагент']['СвЮЛ']["ИНН"],
+                                                 doc["Тип"],
+                                                 True if doc["Удален"] == 'Да' else False
+                                                )
+                                               )
+                    logging.debug('loc_sql=%s', str(loc_sql, 'utf-8'))
+                    self.do_query(loc_sql, reconnect=True)
+                else:
+                    logging.debug('SKIP Не "Актуален" %s', doc["Редакция"]["Актуален"])
+                for events in doc["Событие"]:
+                    #logging.debug('type(events)=%s', type(events))
+                    #logging.debug('events["Вложение"]=%s', events["Вложение"])
+                    for event in events["Вложение"]:
+                        #logging.debug('type(event)=%s', type(event))
+                        #logging.debug('event=%s', event)
+                        log_dict(event, ['Тип', 'Название', 'Номер', 'Направление', 'Удален'])
+                    """
+                        for ev_att in event:  # ["Вложение"]:
+                            logging.debug('type(ev_att)=%s', type(ev_att))
+                            logging.debug('ev_att=%s', ev_att)
+                            #log_dict(ev_att, ['Тип', 'Название', 'Номер', 'Направление', 'Удален'])
+                    """
+                if "Вложение" in doc.keys():
+                    for att in doc["Вложение"]:
+                        logging.debug('type(att)=%s', type(att))
+                        logging.debug('att=%s', att)
+                        #log_dict(att, ['Тип', 'Название', 'Номер', 'Направление', 'Удален'])
+                """
+                if doc["Событие"]["Вложение"]["Направление"] == "Входящий":
+                    # save attachment
+                    pass
+                """
+            if doc:
+                last_uuid = doc["Идентификатор"]
+            else:
+                last_uuid = None
+        return last_uuid
+
+def log_dict(in_dict, keys):
+    """ loging.debug """
+    logging.debug('in_dict=%s:%s', inspect.stack()[1].code_context[0], json.dumps(
+        {wkey: in_dict[wkey] for wkey in keys if wkey in in_dict.keys()},
+        ensure_ascii=False, indent=4))
+
 
 if __name__ == '__main__':
     log_app.PARSER.formatter_class = log_app.argparse.ArgumentDefaultsHelpFormatter
@@ -308,10 +421,12 @@ if __name__ == '__main__':
     SBIS = SbisApp(args=ARGS)
     if SBIS:
         time.sleep(2)
+        SBIS.save_chg_list()
+        """
         RES = SBIS.get_chg_list()
         logging.info('res=%s', json.dumps(RES,
                                           ensure_ascii=False,
                                           indent=4))
-        print('last=', SBIS.last_uuid)
-        #SBIS.last_uuid = 125
+        """
+        #print('last=', SBIS.last_uuid)
         SBIS.api.logout()
