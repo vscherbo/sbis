@@ -61,7 +61,7 @@ def main():
             print(ditem.keys())
             print(doc_short(ditem, prn_keys))
             cagent = doc_short(ditem['Контрагент'], ['СвЮЛ'])
-            print(doc_short(cagent['СвЮЛ'], ['ИНН']))
+            print(cagent['СвЮЛ']['ИНН'])
             firm = doc_short(ditem['НашаОрганизация'], ['СвЮЛ'])
             print(doc_short(firm['СвЮЛ'], ['ИНН']))
             #print('============', doc_attachment(ditem))
