@@ -13,6 +13,7 @@ import json
 import copy
 
 import requests
+import responses
 
 from pg_app import PGapp
 import log_app
@@ -39,25 +40,59 @@ SBIS_QUERY = {
 
 CHG_LIST = {
     "Фильтр": {
+        "ИдентификаторСобытия": "",
+        #"ИдентификаторСобытия": "6b563324-0305-42a6-9db3-f7a2de786db6",
         "ДатаВремяС": "15.02.2021 00.00.00",
-        "ДатаВремяПо": "16.02.2021 23.59.59",
+        #"ДатаВремяПо": "16.02.2021 23.59.59",
         "НашаОрганизация": {
             "СвЮЛ": {
                 "ИНН": "7802715214",
                 "КПП": "780201001"
                 }
         },
+        #"Навигация": {"Страница": "1"},
         "ПолныйСертификатЭП": "Нет"
+
     }
 }
 
+#def print_arg(url, json, headers):
+def print_arg(**kwargs):
+    """ Logging requests post/get args """
+    #logging.debug('url=%s, json=%s, headers=%s', args[0], args[1], args[2])
+    logging.debug('kwargs=%s', kwargs)
+    resp = requests.Response()
+    resp.status_code = 200
+    resp.json_data = {"test": "test"}
+    return resp
+
+@responses.activate
+def do_nothing():
+    """ Test response """
+    responses.add(
+        responses.POST,
+        "https://online.sbis.ru/service/?srv=1",
+        json={"ok": "No request"},
+        status=200
+    )
+    responses.add(
+        responses.GET,
+        "https://online.sbis.ru/service/?srv=1",
+        json={"ok": "No request"},
+        status=200
+    )
+    logging.debug('============================================= test response')
+    response = requests.get("https://online.sbis.ru/service/?srv=1")
+    assert response.status_code == 200
+    response_body = response.json()
+    assert response_body['ok'] == "No request"
 
 class SbisAPI():
     """
     Base class for api.sbis.ru
-               'X-SBISSessionID': '0000ea78-0000ea79-00ba-d3b85272bc0c4842'
     """
     headers = {'Content-type': 'application/json-rpc; charset=utf-8'}
+    headers['User-Agent'] = 'Python-urllib/3.3'
 
     #def __init__(self, login=None, password=None, token=None):
     def __init__(self, config):
@@ -76,7 +111,7 @@ class SbisAPI():
         if self.need_login():
             if config['SBIS']['login'] and config['SBIS']['password']:
                 if self.login(config['SBIS']['login'], config['SBIS']['password']):
-                    config['SBIS']['Token'] = self.access_token
+                    #config['SBIS']['Token'] = self.access_token
                     config['SBIS']['created'] = datetime.now().strftime(DT_FORMAT)
         else:
             logging.info('Do NOT need login. Using saved access_token.')
@@ -95,27 +130,6 @@ class SbisAPI():
             loc_res = True
             logging.info('Access_token expired. Need login')
         return loc_res
-
-    def auth(self, login, password):
-        """ Authentication
-        """
-        payload = {'login': login,
-                   'pass': password}
-        logging.debug('payload=%s', payload)
-        resp = requests.post('{}/getToken'.format(self.auth_url),
-                             params=payload,
-                             headers=self.headers)
-        logging.debug('resp.text=%s', resp.text)
-        ret = resp.json()
-        if ret and 'token' in ret.keys():
-            self.access_token = ret['token']
-            logging.debug('auth ret=%s', ret)
-            self.headers['Token'] = self.access_token
-            result = True
-        else:
-            result = False
-            self.status_code = -1
-        return result
 
     @staticmethod
     def __exception_fmt__(tag, exception):
@@ -138,12 +152,9 @@ class SbisAPI():
         logging.debug('headers=%s', self.headers)
         try:
             logging.info('url=%s', url)
-            #logging.info('url=%s', '{}/{}'.format(self.api_url, url))
-            #logging.info('url=%s', url % self.api_url)
             logging.info('payload=%s', payload)
             err_msg = None
-            #resp = loc_method(url % self.api_url,
-            resp = loc_method(url,
+            resp = loc_method(url=url,
                               json=payload,
                               headers=self.headers)
 
@@ -209,9 +220,10 @@ class SbisAPI():
 
     def logout(self):
         """ close session """
-        loc_payload = copy.deepcopy(SBIS_QUERY)
-        loc_payload["method"] = "СБИС.Выход"
-        self.sbis_req('POST', self.auth_url, loc_payload)
+        if self.headers['X-SBISSessionID']:
+            loc_payload = copy.deepcopy(SBIS_QUERY)
+            loc_payload["method"] = "СБИС.Выход"
+            self.sbis_req('POST', self.auth_url, loc_payload)
 
     def req_chg_list(self, params):
         """ Get changed docs list """
@@ -238,26 +250,68 @@ class SbisApp(PGapp, log_app.LogApp):
             with open(config_filename, 'w') as cfgfile:
                 self.config.write(cfgfile)
 
+    @property
+    def last_uuid(self):
+        """ Read from DB a uuid of the last change
+        """
+        loc_sql = "SELECT * FROM arc_const('sbis_last_uuid');"
+        self.curs.execute(loc_sql)
+        return self.curs.fetchone()[0]
+
+    UPD_LAST = """UPDATE arc_constants SET const_value = %s
+WHERE const_name =%s;"""
+
+    @last_uuid.setter
+    def last_uuid(self, last_value):
+        """ Save to DB a uuid of the last change
+        """
+        loc_sql = self.curs.mogrify(self.UPD_LAST, (last_value, 'sbis_last_uuid'))
+        logging.debug('update last_uuid=%s', loc_sql)
+        self.do_query(loc_sql, reconnect=True)
+
+    @property
+    def timestamp_from(self):
+        """ Read from DB a timestamp of the last change
+        """
+        loc_sql = "SELECT * FROM arc_const('sbis_last_ts');"
+        self.curs.execute(loc_sql)
+        return self.curs.fetchone()[0]
+
+    @timestamp_from.setter
+    def timestamp_from(self, ts_value):
+        """ Save to DB a timestamp of the last change
+        """
+        loc_sql = self.curs.mogrify(self.UPD_LAST, (ts_value, 'sbis_last_ts'))
+        logging.debug('update last_ts=%s', loc_sql)
+        self.do_query(loc_sql, reconnect=True)
+
     def get_chg_list(self):
         """ Get changed docs list """
         loc_params = copy.deepcopy(CHG_LIST)
-        """
-        loc_params["params"] = {"Параметр": {
+        logging.debug('loc_params copied=%s', loc_params)
+        loc_params["Фильтр"] = {
+            #"ИдентификаторСобытия": "6b563324-0305-42a6-9db3-f7a2de786db6"
+            #"ДатаВремяС": "15.02.2021 00.00.00",
+            "ИдентификаторСобытия": SBIS.last_uuid,
+            "ДатаВремяС": SBIS.timestamp_from,
             }
-                                }
-        """
-        res = self.api.req_chg_list(loc_params)
-        logging.info('res=%s', json.dumps(res,
-                                          ensure_ascii=False,
-                                          indent=4))
+        return self.api.req_chg_list(loc_params)
+        #return self.api.req_chg_list(loc_params, method='PRINT')
 
 if __name__ == '__main__':
+    log_app.PARSER.formatter_class = log_app.argparse.ArgumentDefaultsHelpFormatter
     log_app.PARSER.add_argument('--status', action='store_true',
                                 help='get new status of all receipts in status wait')
 
     ARGS = log_app.PARSER.parse_args()
+    #do_nothing()
     SBIS = SbisApp(args=ARGS)
     if SBIS:
         time.sleep(2)
-        SBIS.get_chg_list()
+        RES = SBIS.get_chg_list()
+        logging.info('res=%s', json.dumps(RES,
+                                          ensure_ascii=False,
+                                          indent=4))
+        print('last=', SBIS.last_uuid)
+        #SBIS.last_uuid = 125
         SBIS.api.logout()
