@@ -2,5 +2,8 @@
 *.txt
 *.tar
 *.json
+*.out
+*.xml
+*.pdf
 sbis.conf
 .python-version
