@@ -11,6 +11,7 @@ from datetime import timedelta
 import logging
 import json
 import copy
+import codecs
 
 import requests
 import responses
@@ -107,6 +108,7 @@ class SbisAPI():
         #self.inn = config['SBIS']['inn']
 
         self.status_code = 200
+        self.filename = None
 
         if self.need_login():
             if config['SBIS']['login'] and config['SBIS']['password']:
@@ -181,10 +183,30 @@ class SbisAPI():
                               method,
                               self.status_code,
                               err_msg)
-            ret = resp.json()
+            if method == 'GET':
+                # save file
+                self.save_file(resp)
+                """
+                if '.pdf' in self.filename:
+                    open(self.filename, 'wb').write(resp.content)
+                else:
+                    codecs.open(self.filename,
+                                'w',
+                                'utf-8').write(str(resp.content.decode('cp1251')))
+                """
+            else:
+                ret = resp.json()
 
         return ret
 
+    def save_file(self, resp):
+        """ save file """
+        if '.pdf' in self.filename:
+            open(self.filename, 'wb').write(resp.content)
+        else:
+            codecs.open(self.filename,
+                        'w',
+                        'utf-8').write(str(resp.content.decode('cp1251')))
 
     def login(self, login, password):
         """ open session """
@@ -240,6 +262,7 @@ class SbisApp(PGapp, log_app.LogApp):
         if self.api:
             with open(config_filename, 'w') as cfgfile:
                 self.config.write(cfgfile)
+        self.res = None
 
     @property
     def last_uuid(self):
@@ -290,43 +313,52 @@ WHERE const_name =%s;"""
             loc_params["Фильтр"]["ИдентификаторСобытия"] = SBIS.last_uuid
             loc_params["Фильтр"]["ДатаВремяС"] = SBIS.timestamp_from
         else:
-            loc_params["Фильтр"]["ИдентификаторСобытия"] = None
+            loc_params["Фильтр"]["ИдентификаторСобытия"] = SBIS.last_uuid
             loc_params["Фильтр"]["ДатаВремяС"] = SBIS.timestamp_from
             loc_params["Фильтр"]["Навигация"] = {"Страница": str(page)}
 
         logging.debug('loc_params=%s', json.dumps(loc_params,
                                                   ensure_ascii=False,
                                                   indent=4))
-        return self.api.req_chg_list(loc_params)
+        self.res = self.api.req_chg_list(loc_params)
 
     def save_chg_list(self):
         """ Get changed docs list page by page """
         do_loop = True
-        last_uuid = None
+        last_event_uuid = None
         page = 0
         while do_loop:
-            res = self.get_chg_list(page=page)
-            if res and 'result' in res.keys():
-                if res['result']['Навигация']['ЕстьЕще'] == "Да":
-                    logging.debug('nav=%s', res['result']['Навигация'])
-                    page += 1
+            self.get_chg_list(page=page)
+            if self.res and 'result' in self.res.keys():
+                logging.debug('nav=%s', self.res['result']['Навигация'])
+                if self.res['result']['Навигация']['ЕстьЕще'] == "Да":
                     # parse json result
-                    last_uuid = self.parse_docs(res['result']['Документ'])
-                    do_loop = False # endless loop
+                    last_event_uuid = self.parse_doc_lists(page)
+                    page += 1
+                    if last_event_uuid:
+                        self.last_uuid = last_event_uuid
+                    ##################################
+                    ##################################
+                    ##################################
+                    ##################################
+                    ##################################
+                    #do_loop = False  # DEBUG ONLY!!!!
+
                 else:
                     do_loop = False
             else:
                 do_loop = self.api.status_code == 200
         # last doc uuid after loop end
-        if last_uuid:
-            self.last_uuid = last_uuid
-        return res
 
-    INSERT_DOC = """INSERT INTO sbis.changes(ident, doc_name, dt_create_sbis,
-doc_num, direction, inn_firm, inn_ca, doc_type, deleted)
-VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s);"""
+    INSERT_DOC = """INSERT INTO sbis.changes(event_uuid, event_name, event_dt,
+doc_uuid, doc_name, dt_create_sbis, doc_num, direction, inn_firm, inn_ca, doc_type, deleted)
+VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
 
-    def parse_docs(self, doc_list):
+    def parse_doc(self, doc):
+        """ Parse doc """
+
+
+    def parse_doc_lists(self, page):
         """ Parse docs list
 Если получено событие:
 - не по входящему или исходящему документу
@@ -340,26 +372,33 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s);"""
   возможность запросить ответственного по документу на подтверждение/отклонение аннулирования;
 - со значением поля «Документ.Событие.Название» отличными от «Получение» — пропустите его.
         """
-        with open('sbis-onw-{}.json'.format(time.strftime("%Y-%m-%d-%H-%M")), 'w') as outf:
+        doc_list = self.res['result']['Документ']
+        with open('sbis-onw-{}-{:03d}.json'.format(time.strftime("%Y-%m-%d-%H-%M"), page),
+                  'w') as outf:
             doc = None
+            last_event_uuid = None
+            last_event_name = None
+            last_event_dt = None
             for doc in doc_list:
                 if doc["Направление"] not in {"Входящий", "Исходящий"}:
                     logging.debug('SKIP «Документ.Направление»≠«Входящий»/«Исходящий» %s',
                                   doc["Направление"])
                     continue
-                """ doc["Событие"] is list!
-                if doc["Событие"]["Название"] != "Получение":
-                    logging.debug('SKIP Не "Получение" %s', doc["Событие"]["Название"])
-                    continue
-                """
                 if len(doc["Редакция"]) > 1:
                     logging.info('WATCH Несколько редакций: doc["Редакция"]=%s',
                                  doc["Редакция"])
                 if doc["Редакция"][0]["Актуален"] == "Да":
                     # write to DB
                     outf.write(json.dumps(doc, ensure_ascii=False, indent=4))
+                    last_event_uuid = doc["Событие"][-1]["Идентификатор"]
+                    last_event_name = doc["Событие"][-1]["Название"]
+                    last_event_dt = doc["Событие"][-1]["ДатаВремя"]
                     loc_sql = self.curs.mogrify(self.INSERT_DOC,
-                                                (doc["Идентификатор"],
+                                                (last_event_uuid,
+                                                 last_event_name,
+                                                 datetime.strptime(last_event_dt,
+                                                                   '%d.%m.%Y %H.%M.%S'),
+                                                 doc["Идентификатор"],
                                                  doc["Название"],
                                                  datetime.strptime(doc["ДатаВремяСоздания"],
                                                                    '%d.%m.%Y %H.%M.%S'),
@@ -368,7 +407,7 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s);"""
                                                  doc['НашаОрганизация']['СвЮЛ']["ИНН"],
                                                  doc['Контрагент']['СвЮЛ']["ИНН"],
                                                  doc["Тип"],
-                                                 True if doc["Удален"] == 'Да' else False
+                                                 doc.get("Удален", 'empty')
                                                 )
                                                )
                     logging.debug('loc_sql=%s', str(loc_sql, 'utf-8'))
@@ -376,33 +415,41 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s);"""
                 else:
                     logging.debug('SKIP Не "Актуален" %s', doc["Редакция"]["Актуален"])
                 for events in doc["Событие"]:
-                    #logging.debug('type(events)=%s', type(events))
+                    if len(doc["Событие"]) > 1:
+                        logging.info('WATCH Несколько событий: doc["Событие"]=%s',
+                                     doc["Событие"])
+                    logging.debug('type(events)=%s', type(events))
                     #logging.debug('events["Вложение"]=%s', events["Вложение"])
                     for event in events["Вложение"]:
-                        #logging.debug('type(event)=%s', type(event))
-                        #logging.debug('event=%s', event)
-                        log_dict(event, ['Тип', 'Название', 'Номер', 'Направление', 'Удален'])
-                    """
-                        for ev_att in event:  # ["Вложение"]:
-                            logging.debug('type(ev_att)=%s', type(ev_att))
-                            logging.debug('ev_att=%s', ev_att)
-                            #log_dict(ev_att, ['Тип', 'Название', 'Номер', 'Направление', 'Удален'])
-                    """
+                        if event["Направление"] == "Входящий" and\
+                           event['Тип'] == 'ДокОтгрВх' and\
+                           event['Удален'] == 'Нет':
+                            #log_dict(event, ['Тип', 'Название', 'Номер', 'Направление', 'Удален'])
+                            log_dict(event['Файл'], ['Ссылка'])
+                            filename = '{}_{}'.format(event['Тип'],
+                                                      event['Номер'].replace('/', '_'))
+                            self.get_url(event['Файл']['Ссылка'], '{}.xml'.format(filename))
+                            pdf_url = event.get('СсылкаНаPDF')
+                            if pdf_url and pdf_url != '':
+                                pdffile = '{}.pdf'.format(filename)
+                                self.get_url(pdf_url, pdffile)
+
+                """
                 if "Вложение" in doc.keys():
                     for att in doc["Вложение"]:
                         logging.debug('type(att)=%s', type(att))
                         logging.debug('att=%s', att)
                         #log_dict(att, ['Тип', 'Название', 'Номер', 'Направление', 'Удален'])
                 """
-                if doc["Событие"]["Вложение"]["Направление"] == "Входящий":
-                    # save attachment
-                    pass
-                """
-            if doc:
-                last_uuid = doc["Идентификатор"]
-            else:
-                last_uuid = None
-        return last_uuid
+        return last_event_uuid
+
+    def get_event(self, uuid):
+        """ Get changes for event uuid """
+
+    def get_url(self, url, filename):
+        """ Download from url """
+        self.api.filename = filename
+        self.api.sbis_req('GET', url)
 
 def log_dict(in_dict, keys):
     """ loging.debug """
@@ -412,21 +459,40 @@ def log_dict(in_dict, keys):
 
 
 if __name__ == '__main__':
+    """
+    URL = 'https://disk.sbis.ru/disk/api/v1/0e41d2fe-f018-4578-b484-aa52665f39f3_\
+3de37606-f261-42cd-b4fc-061aa7df7e29?object=simple_file_sd&uuid=9e5\
+b4390-fc33-4187-83f4-b5a004db4e7e&diskhmac=zPgfxCbmFbKiY8CSUpT54aNFag0%3D'
+    FILENAME = 'nakl.xml'
+    """
+
+    URL = 'https://online.sbis.ru/pdfservicepublic/service/?method=%D0%A1%D0%B5%D1%80%D0%B2%D0%B8%D1%81PDF.%D0%A1%D0%B8%D0%BD%D1%85%D1%80%D0%BE%D0%BD%D0%BD%D0%B0%D1%8F%D0%9F%D0%B5%D1%87%D0%B0%D1%82%D1%8C&params=eyJEb2N1bWVudHMiOnsicyI6W3sibiI6ItCY0LTQniIsInQiOiLQp9C40YHQu9C%2BINGG0LXQ%0Au9C%2B0LUifSx7Im4iOiLQoNCw0LfQtNC10LsiLCJ0Ijoi0KfQuNGB0LvQviDRhtC10LvQvtC1%0AIn1dLCJkIjpbWzMzNDI3LG51bGxdXX0sIk9iamVjdE5hbWUiOiJEb2NQcmludCIsIk1ldGhv%0AZE5hbWUiOiJNYXNzTGlzdCIsIlBhcmFtcyI6eyJzIjpbeyJuIjoiUmVxSWQiLCJ0Ijoi0KHR%0AgtGA0L7QutCwIn1dLCJkIjpbIjMzOTQ4Mzg2MzYyNzEzNjUyNTgiXX19&protocol=3&id=0&srv=1'
+    """
+
+    URL = 'https://online.sbis.ru/pdfservicepublic/service/?method=%D0%A1%D0%B5%D1%80%D0%B2%D0%B8%D1%81PDF.%D0%A1%D0%B8%D0%BD%D1%85%D1%80%D0%BE%D0%BD%D0%BD%D0%B0%D1%8F%D0%9F%D0%B5%D1%87%D0%B0%D1%82%D1%8C&params=eyJEb2N1bWVudHMiOnsicyI6W3sibiI6ItCY0LTQniIsInQiOiLQp9C40YHQu9C%2BINGG0LXQ%0Au9C%2B0LUifSx7Im4iOiLQoNCw0LfQtNC10LsiLCJ0Ijoi0KfQuNGB0LvQviDRhtC10LvQvtC1%0AIn1dLCJkIjpbWzMzNDI3LG51bGxdXX0sIk9iamVjdE5hbWUiOiJEb2NQcmludCIsIk1ldGhv%0AZE5hbWUiOiJNYXNzTGlzdCIsIlBhcmFtcyI6eyJzIjpbeyJuIjoiUmVxSWQiLCJ0Ijoi0KHR%0AgtGA0L7QutCwIn1dLCJkIjpbIjMzOTQ4Mzg2MzYyNzEzNjUyNTgiXX19&protocol=3&id=0&srv=1'
+    """
+    FILENAME = 'nakl1.pdf'
+
     log_app.PARSER.formatter_class = log_app.argparse.ArgumentDefaultsHelpFormatter
-    log_app.PARSER.add_argument('--status', action='store_true',
-                                help='get new status of all receipts in status wait')
+    log_app.PARSER.add_argument('--get_last', action='store_true',
+                                help='get last changes')
+    log_app.PARSER.add_argument('--get_event', type=int,
+                                help='get changes for event uuid')
+    log_app.PARSER.add_argument('--get_url', type=str,
+                                help='download document from url')
 
     ARGS = log_app.PARSER.parse_args()
     #do_nothing()
     SBIS = SbisApp(args=ARGS)
     if SBIS:
-        time.sleep(2)
-        SBIS.save_chg_list()
-        """
-        RES = SBIS.get_chg_list()
-        logging.info('res=%s', json.dumps(RES,
-                                          ensure_ascii=False,
-                                          indent=4))
-        """
-        #print('last=', SBIS.last_uuid)
+        if ARGS.get_last:
+            time.sleep(2)
+            SBIS.save_chg_list()
+        elif ARGS.get_event:
+            SBIS.get_event(ARGS.get_event)
+        elif ARGS.get_url:
+            #SBIS.get_url(ARGS.get_url)
+            #SBIS.get_url(URL, 'nakl.xml')
+            SBIS.get_url(URL, FILENAME)
+
         SBIS.api.logout()
