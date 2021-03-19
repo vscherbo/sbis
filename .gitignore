@@ -7,3 +7,4 @@
 *.pdf
 sbis.conf
 .python-version
+test*
