@@ -232,7 +232,7 @@ class SbisAPI():
             self.read_xml()
 
     def read_xml(self):
-        """ save xml to PG """
+        """ read saved xml and prepare to write to PG """
         tree = ET.parse(self.filename)
         root = tree.getroot()
         self.waybill, self.items_table = parse_xml(root)
@@ -340,10 +340,10 @@ WHERE const_name =%s;"""
         """
         if page == 0:
             loc_params["Фильтр"]["ИдентификаторСобытия"] = SBIS.last_uuid
-            loc_params["Фильтр"]["ДатаВремяС"] = SBIS.timestamp_from
+            #loc_params["Фильтр"]["ДатаВремяС"] = SBIS.timestamp_from
         else:
             loc_params["Фильтр"]["ИдентификаторСобытия"] = SBIS.last_uuid
-            loc_params["Фильтр"]["ДатаВремяС"] = SBIS.timestamp_from
+            #loc_params["Фильтр"]["ДатаВремяС"] = SBIS.timestamp_from
             loc_params["Фильтр"]["Навигация"] = {"Страница": str(page)}
 
         logging.debug('loc_params=%s', json.dumps(loc_params,
@@ -382,7 +382,7 @@ WHERE const_name =%s;"""
                 do_loop = self.api.api_ok()
         # last doc uuid after loop end
 
-    INSERT_DOC = """INSERT INTO sbis.changes(event_uuid, event_name, event_dt,
+    INSERT_CHG = """INSERT INTO sbis.changes(event_uuid, event_name, event_dt,
 doc_uuid, doc_name, dt_create_sbis, doc_num, direction, inn_firm, inn_ca, doc_type, deleted)
 VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
 
@@ -420,69 +420,101 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
                     logging.info('WATCH Несколько редакций: doc["Редакция"]=%s',
                                  doc["Редакция"])
                 if doc["Редакция"][0]["Актуален"] == "Да":
-                    # write to DB
-                    outf.write(json.dumps(doc, ensure_ascii=False, indent=4))
-                    last_event_uuid = doc["Событие"][-1]["Идентификатор"]
                     last_event_name = doc["Событие"][-1]["Название"]
-                    last_event_dt = doc["Событие"][-1]["ДатаВремя"]
-                    loc_sql = self.curs.mogrify(self.INSERT_DOC,
-                                                (last_event_uuid,
-                                                 last_event_name,
-                                                 datetime.strptime(last_event_dt,
-                                                                   '%d.%m.%Y %H.%M.%S'),
-                                                 doc["Идентификатор"],
-                                                 doc["Название"],
-                                                 datetime.strptime(doc["ДатаВремяСоздания"],
-                                                                   '%d.%m.%Y %H.%M.%S'),
-                                                 doc["Номер"],
-                                                 doc["Направление"],
-                                                 doc['НашаОрганизация']['СвЮЛ']["ИНН"],
-                                                 doc['Контрагент']['СвЮЛ']["ИНН"],
-                                                 doc["Тип"],
-                                                 doc.get("Удален", 'empty')
-                                                )
-                                               )
-                    logging.debug('loc_sql=%s', str(loc_sql, 'utf-8'))
-                    self.do_query(loc_sql, reconnect=True)
+                    last_event_uuid = doc["Событие"][-1]["Идентификатор"]
+                    if last_event_name == 'Получение':
+                        # write to DB
+                        outf.write(json.dumps(doc, ensure_ascii=False, indent=4))
+                        last_event_dt = doc["Событие"][-1]["ДатаВремя"]
+                        loc_sql = self.curs.mogrify(self.INSERT_CHG,
+                                                    (last_event_uuid,
+                                                     last_event_name,
+                                                     datetime.strptime(last_event_dt,
+                                                                       '%d.%m.%Y %H.%M.%S'),
+                                                     doc["Идентификатор"],
+                                                     doc["Название"],
+                                                     datetime.strptime(doc["ДатаВремяСоздания"],
+                                                                       '%d.%m.%Y %H.%M.%S'),
+                                                     doc["Номер"],
+                                                     doc["Направление"],
+                                                     doc['НашаОрганизация']['СвЮЛ']["ИНН"],
+                                                     doc['Контрагент']['СвЮЛ']["ИНН"],
+                                                     doc["Тип"],
+                                                     doc.get("Удален", 'empty')
+                                                    )
+                                                   )
+                        logging.debug('loc_sql=%s', str(loc_sql, 'utf-8'))
+                        self.do_query(loc_sql, reconnect=True)
+                        # attachments
+                        for events in doc["Событие"]:
+                            if len(doc["Событие"]) > 1:
+                                logging.info('WATCH Несколько событий: doc["Событие"]=%s',
+                                             doc["Событие"])
+                            logging.debug('type(events)=%s', type(events))
+                            #logging.debug('events["Вложение"]=%s', events["Вложение"])
+                            for event in events["Вложение"]:
+                                log_dict(event,
+                                         ['Тип', 'Название', 'Номер', 'Направление', 'Удален'])
+                                #event['Тип'] == 'УпдСчфДоп' and\
+                                if event["Направление"] == "Входящий" and\
+                                   event['Тип'] == 'УпдСчфДоп' and\
+                                   event['Удален'] == 'Нет':
+                                    log_dict(event['Файл'], ['Ссылка'])
+                                    filename = '{}_{}'.format(event['Тип'],
+                                                              event['Номер'].replace('/', '_'))
+                                    xml_url = event['Файл'].get('Ссылка')
+                                    if xml_url and xml_url != '':
+                                        self.get_url(event['Файл']['Ссылка'],
+                                                     '{}.xml'.format(filename))
+                                        self.xml_db()
+                                    pdf_url = event.get('СсылкаНаPDF')
+                                    if pdf_url and pdf_url != '':
+                                        pdffile = '{}.pdf'.format(filename)
+                                        self.get_url(pdf_url, pdffile)
                 else:
                     logging.debug('SKIP Не "Актуален" %s', doc["Редакция"]["Актуален"])
-                for events in doc["Событие"]:
-                    if len(doc["Событие"]) > 1:
-                        logging.info('WATCH Несколько событий: doc["Событие"]=%s',
-                                     doc["Событие"])
-                    logging.debug('type(events)=%s', type(events))
-                    #logging.debug('events["Вложение"]=%s', events["Вложение"])
-                    for event in events["Вложение"]:
-                        log_dict(event, ['Тип', 'Название', 'Номер', 'Направление', 'Удален'])
-                        #event['Тип'] == 'УпдСчфДоп' and\
-                        if event["Направление"] == "Входящий" and\
-                           event['Тип'] == 'УпдСчфДоп' and\
-                           event['Удален'] == 'Нет':
-                            log_dict(event['Файл'], ['Ссылка'])
-                            filename = '{}_{}'.format(event['Тип'],
-                                                      event['Номер'].replace('/', '_'))
-                            xml_url = event['Файл'].get('Ссылка')
-                            if xml_url and xml_url != '':
-                                self.get_url(event['Файл']['Ссылка'], '{}.xml'.format(filename))
-                                self.xml_db()
-                            pdf_url = event.get('СсылкаНаPDF')
-                            if pdf_url and pdf_url != '':
-                                pdffile = '{}.pdf'.format(filename)
-                                self.get_url(pdf_url, pdffile)
 
-                """
-                if "Вложение" in doc.keys():
-                    for att in doc["Вложение"]:
-                        logging.debug('type(att)=%s', type(att))
-                        logging.debug('att=%s', att)
-                        #log_dict(att, ['Тип', 'Название', 'Номер', 'Направление', 'Удален'])
-                """
         return last_event_uuid
+
+    INSERT_DOC = """INSERT INTO sbis.docs(doc_num, doc_date, basis_num, basis_date)
+VALUES(%s, %s, %s, %s) RETURNING id;"""
+
+    INSERT_ITEM = """INSERT INTO sbis.doc_items(doc_id, item_name, pos_num, qnt, okei, vat,
+item_price, total_no_vat, total_price, ow_article)
+VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
 
     def xml_db(self):
         """ Save xml doc to PG """
-        logging.debug('waybill=%s', self.api.waybill)
-        logging.debug('items_table=%s', self.api.items_table)
+        #logging.debug('waybill=%s', self.api.waybill)
+        loc_sql = self.curs.mogrify(self.INSERT_DOC,
+                                    (self.api.waybill['НомерСчФ'],
+                                     self.api.waybill['ДатаСчФ'],
+                                     self.api.waybill['НомОсн'],
+                                     self.api.waybill['ДатаОсн']
+                                    ))
+        logging.debug('loc_sql=%s', str(loc_sql, 'utf-8'))
+        self.do_query(loc_sql, reconnect=True)
+        inserted_id = self.curs.fetchone()[0]
+        if inserted_id:
+            # items
+            logging.debug('items_table=%s', self.api.items_table)
+            for item_row in self.api.items_table:
+                loc_sql = self.curs.mogrify(self.INSERT_ITEM,
+                                            (inserted_id,
+                                             item_row['НаимТов'],
+                                             item_row['НомСтр'],
+                                             item_row['КолТов'],
+                                             item_row['ОКЕИ_Тов'],
+                                             item_row['НалСт'],
+                                             item_row['ЦенаТов'],
+                                             item_row['СтТовБезНДС'],
+                                             item_row['СтТовУчНал'],
+                                             item_row['АртикулТов']
+                                            ))
+                logging.debug('loc_sql=%s', str(loc_sql, 'utf-8'))
+                self.do_query(loc_sql, reconnect=True)
+        else:
+            logging.warning('Не удалось получить id добавленной в sbis.docs строки')
 
     def get_event(self, uuid):
         """ Get changes for event uuid """
