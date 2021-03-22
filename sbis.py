@@ -6,7 +6,7 @@ import inspect
 import os
 import time
 from datetime import datetime
-from datetime import timedelta
+#from datetime import timedelta
 #import datetime
 import logging
 import json
@@ -118,37 +118,27 @@ class SbisAPI():
     headers = {'Content-type': 'application/json-rpc; charset=utf-8'}
     headers['User-Agent'] = 'Python-urllib/3.3'
 
-    #def __init__(self, login=None, password=None, token=None):
     def __init__(self, config):
         logging.getLogger(__name__).addHandler(logging.NullHandler())
-        #self.access_token = config['SBIS']['token']
-        self.access_token = None
-        self.token_created = datetime.strptime(config['SBIS']['created'],
-                                               DT_FORMAT)
 
         self.auth_url = config['SBIS']['auth_url']
         self.api_url = config['SBIS']['api_url']
-        #self.inn = config['SBIS']['inn']
 
         self.status_code = 200
         self.filename = None
         self.waybill = {}
         self.items_table = []
 
-        if self.need_login():
-            if config['SBIS']['login'] and config['SBIS']['password']:
-                if self.login(config['SBIS']['login'], config['SBIS']['password']):
-                    #config['SBIS']['Token'] = self.access_token
-                    config['SBIS']['created'] = datetime.now().strftime(DT_FORMAT)
-        else:
-            logging.info('Do NOT need login. Using saved access_token.')
-            self.headers['X-SBISSessionID'] = self.access_token
+        if config['SBIS']['login'] and config['SBIS']['password']:
+            if self.login(config['SBIS']['login'], config['SBIS']['password']):
+                pass
+                #config['SBIS']['Token'] = self.access_token
+                #config['SBIS']['created'] = datetime.now().strftime(DT_FORMAT)
 
 
     def need_login(self):
         """ Returns True if token is expired """
-        #return not (self.access_token
-        #            and timedelta(datetime.now(), self.token_created) < EXP_PERIOD)
+    """
         loc_res = False
         if not self.access_token:
             loc_res = True
@@ -157,6 +147,7 @@ class SbisAPI():
             loc_res = True
             logging.info('Access_token expired. Need login')
         return loc_res
+    """
 
     @staticmethod
     def __exception_fmt__(tag, exception):
@@ -248,9 +239,8 @@ class SbisAPI():
                                 }
         ret = self.sbis_req('POST', self.auth_url, loc_payload)
         if ret and 'result' in ret.keys():
-            self.access_token = ret['result']
             logging.debug('auth ret=%s', ret)
-            self.headers['X-SBISSessionID'] = self.access_token
+            self.headers['X-SBISSessionID'] = ret['result']
             result = True
         else:
             result = False
@@ -405,8 +395,12 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
 - со значением поля «Документ.Событие.Название» отличными от «Получение» — пропустите его.
         """
         doc_list = self.res['result']['Документ']
+        """
         with open('sbis-onw-{}-{:03d}.json'.format(time.strftime("%Y-%m-%d-%H-%M"), page),
                   'w') as outf:
+        """
+        file_path = 'sbis-onw-{}-{:03d}.json'.format(time.strftime("%Y-%m-%d-%H-%M"), page)
+        with open(file_path, 'w') as outf:
             doc = None
             last_event_uuid = None
             last_event_name = None
@@ -420,6 +414,7 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
                     logging.info('WATCH Несколько редакций: doc["Редакция"]=%s',
                                  doc["Редакция"])
                 if doc["Редакция"][0]["Актуален"] == "Да":
+                    # всегда? одно событие: [0] eq [-1]
                     last_event_name = doc["Событие"][-1]["Название"]
                     last_event_uuid = doc["Событие"][-1]["Идентификатор"]
                     if last_event_name == 'Получение':
@@ -446,35 +441,42 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
                         logging.debug('loc_sql=%s', str(loc_sql, 'utf-8'))
                         self.do_query(loc_sql, reconnect=True)
                         # attachments
-                        for events in doc["Событие"]:
-                            if len(doc["Событие"]) > 1:
-                                logging.info('WATCH Несколько событий: doc["Событие"]=%s',
-                                             doc["Событие"])
-                            logging.debug('type(events)=%s', type(events))
-                            #logging.debug('events["Вложение"]=%s', events["Вложение"])
-                            for event in events["Вложение"]:
-                                log_dict(event,
-                                         ['Тип', 'Название', 'Номер', 'Направление', 'Удален'])
-                                #event['Тип'] == 'УпдСчфДоп' and\
-                                if event["Направление"] == "Входящий" and\
-                                   event['Тип'] == 'УпдСчфДоп' and\
-                                   event['Удален'] == 'Нет':
-                                    log_dict(event['Файл'], ['Ссылка'])
-                                    filename = '{}_{}'.format(event['Тип'],
-                                                              event['Номер'].replace('/', '_'))
-                                    xml_url = event['Файл'].get('Ссылка')
-                                    if xml_url and xml_url != '':
-                                        self.get_url(event['Файл']['Ссылка'],
-                                                     '{}.xml'.format(filename))
-                                        self.xml_db()
-                                    pdf_url = event.get('СсылкаНаPDF')
-                                    if pdf_url and pdf_url != '':
-                                        pdffile = '{}.pdf'.format(filename)
-                                        self.get_url(pdf_url, pdffile)
+                        self.get_att(doc["Событие"])
                 else:
                     logging.debug('SKIP Не "Актуален" %s', doc["Редакция"]["Актуален"])
 
+        # delete empty outf
+        if os.path.getsize(file_path) == 0:
+            os.remove(file_path)
+
         return last_event_uuid
+
+    def get_att(self, ev_list):
+        """ Save attached XML to PG """
+        if len(ev_list) > 1:
+            logging.info('WATCH Несколько событий: ev_list=%s',
+                         ev_list)
+        for event in ev_list:
+            #logging.debug('type(event)=%s', type(event))
+            #logging.debug('event["Вложение"]=%s', event["Вложение"])
+            for att in event["Вложение"]:
+                log_dict(att,
+                         ['Тип', 'Название', 'Номер', 'Направление', 'Удален'])
+                if att["Направление"] == "Входящий" and\
+                   att['Тип'] == 'УпдСчфДоп' and\
+                   att['Удален'] == 'Нет':
+                    log_dict(att['Файл'], ['Ссылка'])
+                    filename = '{}_{}'.format(att['Тип'],
+                                              att['Номер'].replace('/', '_'))
+                    xml_url = att['Файл'].get('Ссылка')
+                    if xml_url and xml_url != '':
+                        self.get_url(att['Файл']['Ссылка'],
+                                     '{}.xml'.format(filename))
+                        self.xml_db()
+                    pdf_url = att.get('СсылкаНаPDF')
+                    if pdf_url and pdf_url != '':
+                        pdffile = '{}.pdf'.format(filename)
+                        self.get_url(pdf_url, pdffile)
 
     INSERT_DOC = """INSERT INTO sbis.docs(doc_num, doc_date, basis_num, basis_date)
 VALUES(%s, %s, %s, %s) RETURNING id;"""
