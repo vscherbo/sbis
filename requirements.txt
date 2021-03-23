@@ -1,0 +1,4 @@
+requests
+responses<0.12.1
+git+https://github.com/vscherbo/apps.git
+git+https://github.com/vscherbo/pg_app.git
