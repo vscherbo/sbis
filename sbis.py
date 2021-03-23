@@ -395,11 +395,7 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
 - со значением поля «Документ.Событие.Название» отличными от «Получение» — пропустите его.
         """
         doc_list = self.res['result']['Документ']
-        """
-        with open('sbis-onw-{}-{:03d}.json'.format(time.strftime("%Y-%m-%d-%H-%M"), page),
-                  'w') as outf:
-        """
-        file_path = 'sbis-onw-{}-{:03d}.json'.format(time.strftime("%Y-%m-%d-%H-%M"), page)
+        file_path = 'json/sbis-onw-{}-{:03d}.json'.format(time.strftime("%Y-%m-%d-%H-%M"), page)
         with open(file_path, 'w') as outf:
             doc = None
             last_event_uuid = None
@@ -411,8 +407,8 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
                                   doc["Направление"])
                     continue
                 if len(doc["Редакция"]) > 1:
-                    logging.info('WATCH Несколько редакций: doc["Редакция"]=%s',
-                                 doc["Редакция"])
+                    logging.warning('WATCH Несколько редакций: doc["Редакция"]=%s',
+                                    doc["Редакция"])
                 if doc["Редакция"][0]["Актуален"] == "Да":
                     # всегда? одно событие: [0] eq [-1]
                     last_event_name = doc["Событие"][-1]["Название"]
@@ -454,8 +450,8 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
     def get_att(self, ev_list):
         """ Save attached XML to PG """
         if len(ev_list) > 1:
-            logging.info('WATCH Несколько событий: ev_list=%s',
-                         ev_list)
+            logging.warning('WATCH Несколько событий: ev_list=%s',
+                            ev_list)
         for event in ev_list:
             #logging.debug('type(event)=%s', type(event))
             #logging.debug('event["Вложение"]=%s', event["Вложение"])
@@ -467,15 +463,15 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
                    att['Удален'] == 'Нет':
                     log_dict(att['Файл'], ['Ссылка'])
                     filename = '{}_{}'.format(att['Тип'],
-                                              att['Номер'].replace('/', '_'))
+                                                  att['Номер'].replace('/', '_'))
                     xml_url = att['Файл'].get('Ссылка')
                     if xml_url and xml_url != '':
                         self.get_url(att['Файл']['Ссылка'],
-                                     '{}.xml'.format(filename))
+                                     'xml/{}.xml'.format(filename))
                         self.xml_db()
                     pdf_url = att.get('СсылкаНаPDF')
                     if pdf_url and pdf_url != '':
-                        pdffile = '{}.pdf'.format(filename)
+                        pdffile = 'pdf/{}.pdf'.format(filename)
                         self.get_url(pdf_url, pdffile)
 
     INSERT_DOC = """INSERT INTO sbis.docs(doc_num, doc_date, basis_num, basis_date)
