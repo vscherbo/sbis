@@ -1,0 +1,4 @@
+[imap source]
+imap_srv=imap.yandex.ru
+login=<src_email>
+password=<src_password>
