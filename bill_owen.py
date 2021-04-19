@@ -112,7 +112,7 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
                 logging.debug('loc_sql=%s', str(loc_sql, 'utf-8'))
                 self.do_query(loc_sql, reconnect=True)
         else:
-            logging.warning('Не удалось получить id добавленной в sbis.docs строки')
+            logging.warning('Не удалось получить id добавленной в sbis.ow_bill строки')
 
 if __name__ == '__main__':
 
