@@ -3,3 +3,7 @@
 pg_host = vm-pg.arc.world
 pg_user = arc_energo
 
+[imap source]
+imap_srv=imap.yandex.ru
+login=owen_bill@kipspb.ru
+password=<password>
