@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 """ Load into PG Owen's catalog in ETIM format
+https://products-list.owen.ru/etim/owen_etim_json.zip
 """
 
 import os
