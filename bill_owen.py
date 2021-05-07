@@ -131,7 +131,7 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
             logging.warning('Не удалось получить id добавленной в sbis.ow_bill строки')
 
     def connect(self):
-        """ Connect to IMAP servers: source and destination"""
+        """ Connect to IMAP server"""
         src_type, src_data = self.imap_src.login(self.config['imap source']['login'],
                                                  self.config['imap source']['password'])
         if src_type != 'OK':
@@ -171,19 +171,6 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
         for num in data[0].split():
             res, data = self.imap_src.uid('FETCH', num, '(RFC822)')
             self.get_msg(data)
-            """
-            if data[0]:
-                loc_data = data[0][1]
-                if isinstance(loc_data, bytes):
-                    msg = email.message_from_bytes(loc_data)
-                else:
-                    msg = None
-                    logging.warning('Wrong type(loc_data)=%s', type(loc_data))
-            else:
-                loc_data = 'no data[0]'
-                msg = None
-            """
-
             logging.info('Message found result=%s: num=%s', res, num)
             if self.msg:
                 subj_str = decode_header_field(self.msg.get('Subject', 'no_Subject'))
