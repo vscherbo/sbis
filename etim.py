@@ -29,6 +29,8 @@ class EtimApp(PGapp, log_app.LogApp):
 
     INSERT = """INSERT INTO ext.ow_goods(owen_id, name_short, name_full)
 VALUES(%s, %s, %s);"""
+    COPY = r"""\copy ext.ow_goods(owen_id, name_short, name_full) from
+    """
 
     def load_json(self):
         """ load goods from json file into PG """

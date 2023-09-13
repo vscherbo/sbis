@@ -16,6 +16,8 @@ from pg_app import PGapp
 import log_app
 from log_app import logging
 
+MONTH = {'Jan':'01', 'Feb':'02', 'Mar':'03', 'Apr':'04', 'May':'05', 'Jun':'06',
+         'Jul':'07', 'Aug':'08', 'Sep':'09', 'Oct':'10', 'Nov':'11', 'Dec':'12'}
 
 def parse_xml(root):
     """ Parse XML bill """
@@ -75,8 +77,8 @@ class OwenApp(PGapp, log_app.LogApp):
         root = tree.getroot()
         self.bill, self.items_table = parse_xml(root)
 
-    INSERT_DOC = """INSERT INTO sbis.ow_bill(schet, date_sch, tax, num_nakl, summa,
-nds, post_summa, post_nds) VALUES(%s, %s, %s, %s, %s, %s, %s, %s) RETURNING bill_id;"""
+    INSERT_DOC = """INSERT INTO sbis.ow_bill(schet, msg_dt, date_sch, tax, num_nakl, summa,
+nds, post_summa, post_nds) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING bill_id;"""
 
     """
     code="30524" name="ДТС035-100М.В3.2000" kolich="3" price="2015"
@@ -92,6 +94,7 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
         #logging.debug('bill=%s', self.bill)
         loc_sql = self.curs.mogrify(self.INSERT_DOC,
                                     (self.bill['schet'],
+                                     self.bill['msg_dt'],
                                      self.bill['date_sch'],
                                      self.bill['tax'],
                                      self.bill['num_nakl'],
@@ -176,9 +179,15 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
                 subj_str = decode_header_field(self.msg.get('Subject', 'no_Subject'))
                 from_str = decode_header_field(self.msg.get('From', 'no_From'))
                 to_str = decode_header_field(self.msg.get('To', 'no_To'))
-                logging.info('From=%s To=%s Subject=%s', from_str.replace('\n', ''),
+                date_str = self.msg.get('Date', 'no_Date')
+                _, day, month, year, time, _ = date_str.split(' ')
+                hour, minute, second = time.split(':')
+                msg_dt = '{}{}{}_{}{}{}'.format(year, MONTH[month], day, hour, minute, second)
+                logging.info('From=%s To=%s Subject=%s Date=%s DT=%s', from_str.replace('\n', ''),
                              to_str.replace('\n', ''),
-                             subj_str.replace('\n', ''))
+                             subj_str.replace('\n', ''),
+                             date_str,
+                             msg_dt)
                 # downloading attachments
                 for part in self.msg.walk():
                     if part.get_content_maintype() == 'multipart':
@@ -188,7 +197,8 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
                     file_name = decode_header_field(part.get_filename())
                     logging.info('attachment file_name="%s"', file_name)
                     if file_name.startswith('Счет_Д') and file_name.endswith('.xml'):
-                        file_path = os.path.join('bills/', file_name)
+                        fname, ext = os.path.splitext(file_name)
+                        file_path = os.path.join('bills/', '{}_{}{}'.format(fname, msg_dt, ext))
                         if not os.path.isfile(file_path):
                             fpart = open(file_path, 'wb')
                             fpart.write(part.get_payload(decode=True))
@@ -196,6 +206,7 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
                         #subject = str(msg).split("Subject: ", 1)[1].split("\nTo:", 1)[0]
                         logging.info('Downloaded "%s" from email titled "%s".', file_name, subj_str)
                         self.read_xml(file_path)
+                        self.bill['msg_dt'] = msg_dt
                         self.xml_db()
             else:
                 logging.info('Empty msg')

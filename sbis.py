@@ -15,7 +15,7 @@ import codecs
 
 import xml.etree.ElementTree as ET
 import requests
-import responses
+#import responses
 
 from pg_app import PGapp
 import log_app
@@ -68,9 +68,10 @@ def print_arg(**kwargs):
     resp.json_data = {"test": "test"}
     return resp
 
+"""
 @responses.activate
 def do_nothing():
-    """ Test response """
+    " Test response "
     responses.add(
         responses.POST,
         "https://online.sbis.ru/service/?srv=1",
@@ -88,6 +89,7 @@ def do_nothing():
     assert response.status_code == 200
     response_body = response.json()
     assert response_body['ok'] == "No request"
+"""
 
 def parse_xml(root):
     """ Parse SBIS XML doc """
@@ -463,7 +465,7 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
                    att['Удален'] == 'Нет':
                     log_dict(att['Файл'], ['Ссылка'])
                     filename = '{}_{}'.format(att['Тип'],
-                                                  att['Номер'].replace('/', '_'))
+                                              att['Номер'].replace('/', '_'))
                     xml_url = att['Файл'].get('Ссылка')
                     if xml_url and xml_url != '':
                         self.get_url(att['Файл']['Ссылка'],
