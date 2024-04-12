@@ -3,18 +3,17 @@
 which contain Счета....xml
 Parse and save them into PG
 """
-import os
-import logging
-
-import xml.etree.ElementTree as ET
-import imaplib
 import email
 import email.message
+import imaplib
+import logging
+import os
+import xml.etree.ElementTree as ET
 from email.header import decode_header
 
-from pg_app import PGapp
 import log_app
-from log_app import logging
+#from log_app import logging
+from pg_app import PGapp
 
 MONTH = {'Jan':'01', 'Feb':'02', 'Mar':'03', 'Apr':'04', 'May':'05', 'Jun':'06',
          'Jul':'07', 'Aug':'08', 'Sep':'09', 'Oct':'10', 'Nov':'11', 'Dec':'12'}
@@ -24,9 +23,11 @@ def parse_xml(root):
     bill = {}
     items_table = []
     bill['schet'] = root.attrib['schet']
+    bill['type'] = root.attrib.get('type', 'PRE')
     bill['date_sch'] = root.attrib['date_sch']
     bill['tax'] = root.attrib['tax']
     bill['num_nakl'] = root.attrib['num_nakl']
+    bill['date_got'] = root.attrib.get('date_got')
     bill['summa'] = root.attrib['summa']
     bill['nds'] = root.attrib['nds']
     bill['post_summa'] = root.attrib['post_summa']
@@ -42,7 +43,7 @@ def parse_xml(root):
 def decode_header_field(arg_field):
     """ Decode SMTP Header's filed"""
     _field = decode_header(arg_field)
-    logging.debug('arg_field=%s, type(_field)=%s, _field=%s', arg_field, type(_field), _field)
+    #logging.debug('arg_field=%s, type(_field)=%s, _field=%s', arg_field, type(_field), _field)
 
     str_list = []
     for tup in _field:
@@ -60,11 +61,12 @@ class OwenApp(PGapp, log_app.LogApp):
     def __init__(self, args):
         log_app.LogApp.__init__(self, args=args)
         script_name = os.path.splitext(os.path.basename(__file__))[0]
-        config_filename = '{}.conf'.format(script_name)
+        #config_filename = '{}.conf'.format(script_name)
+        config_filename = f'{script_name}.conf'
         self.get_config(config_filename)
-        super(OwenApp, self).__init__(self.config['PG']['pg_host'],
-                                      self.config['PG']['pg_user'])
-        if self.pg_connect():
+        super().__init__(self.config['PG']['pg_host'],
+                         self.config['PG']['pg_user'])
+        if self.wait_pg_connect():
             self.set_session(autocommit=True)
         self.imap_src = imaplib.IMAP4_SSL(self.config['imap source']['imap_srv'])
         self.msg = None
@@ -77,17 +79,32 @@ class OwenApp(PGapp, log_app.LogApp):
         root = tree.getroot()
         self.bill, self.items_table = parse_xml(root)
 
-    INSERT_DOC = """INSERT INTO sbis.ow_bill(schet, msg_dt, date_sch, tax, num_nakl, summa,
-nds, post_summa, post_nds) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING bill_id;"""
+    INSERT_DOC = """INSERT INTO sbis.ow_bill(schet, msg_dt, date_sch, tax, num_nakl, date_got,
+summa, nds, post_summa, post_nds, doc_type) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+ON CONFLICT DO NOTHING RETURNING bill_id;"""
+
+    """
+    ON CONFLICT (schet, num_nakl, doc_type) DO UPDATE
+    SET summa = EXCLUDED.summa,
+    nds = EXCLUDED.nds,
+    date_got = EXCLUDED.date_got,
+    msg_dt = EXCLUDED.msg_dt,
+    dbl = dbl+1
+    RETURNING bill_id;
+    """
 
     """
     code="30524" name="ДТС035-100М.В3.2000" kolich="3" price="2015"
     price_skidka="1470.95" summa="4412.85" nds="882.57"
     FULL_NAME="Термопреобразователь сопротивления ДТС035-100М.В3.2000" STRANA="" GTD=""
+    2023:
+    <izdelia code="55118" name="ПВТ10-Н2.3.И" kolich="2" price="15500"
+    price_skidka="11315" summa="22630" nds="4526" srok="2"/>
     """
     INSERT_ITEM = """INSERT INTO sbis.ow_bill_items(bill_id, code, item_name, kolich,
-price, price_skidka, summa, nds, full_name, strana, gtd)
-VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
+price, price_skidka, summa, nds, srok, full_name, strana, gtd)
+VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
+# price, price_skidka, summa, nds, srok, full_name, strana, gtd)
 
     def xml_db(self):
         """ Save xml doc to PG """
@@ -98,14 +115,19 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
                                      self.bill['date_sch'],
                                      self.bill['tax'],
                                      self.bill['num_nakl'],
+                                     self.bill['date_got'],
                                      self.bill['summa'],
                                      self.bill['nds'],
                                      self.bill['post_summa'],
-                                     self.bill['post_nds']
+                                     self.bill['post_nds'],
+                                     self.bill['type']
                                     ))
         logging.debug('loc_sql=%s', str(loc_sql, 'utf-8'))
-        self.do_query(loc_sql, reconnect=True)
-        inserted_id = self.curs.fetchone()[0]
+        inserted_id = None
+        if self.do_query(loc_sql, reconnect=True):
+            ins_res = self.curs.fetchone()
+            if ins_res is not None:
+                inserted_id = ins_res[0]
         if inserted_id:
             # items
             """
@@ -124,9 +146,10 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
                                              item_row['price_skidka'],
                                              item_row['summa'],
                                              item_row['nds'],
-                                             item_row['FULL_NAME'],
-                                             item_row['STRANA'],
-                                             item_row['GTD']
+                                             item_row.get('srok'),
+                                             item_row.get('FULL_NAME'),
+                                             item_row.get('STRANA'),
+                                             item_row.get('GTD')
                                             ))
                 logging.debug('loc_sql=%s', str(loc_sql, 'utf-8'))
                 self.do_query(loc_sql, reconnect=True)
@@ -182,7 +205,8 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
                 date_str = self.msg.get('Date', 'no_Date')
                 _, day, month, year, time, _ = date_str.split(' ')
                 hour, minute, second = time.split(':')
-                msg_dt = '{}{}{}_{}{}{}'.format(year, MONTH[month], day, hour, minute, second)
+                #msg_dt = '{}{}{}_{}{}{}'.format(year, MONTH[month], day, hour, minute, second)
+                msg_dt = f'{year}{MONTH[month]}{day:0>2}_{hour}{minute}{second}'
                 logging.info('From=%s To=%s Subject=%s Date=%s DT=%s', from_str.replace('\n', ''),
                              to_str.replace('\n', ''),
                              subj_str.replace('\n', ''),
@@ -196,13 +220,16 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
                         continue
                     file_name = decode_header_field(part.get_filename())
                     logging.info('attachment file_name="%s"', file_name)
-                    if file_name.startswith('Счет_Д') and file_name.endswith('.xml'):
+                    if (file_name.startswith('Накладная_СД')\
+                        or file_name.startswith('Счет_Д')\
+                        or file_name.startswith('Document Д')\
+                       ) and file_name.endswith('.xml'):
                         fname, ext = os.path.splitext(file_name)
-                        file_path = os.path.join('bills/', '{}_{}{}'.format(fname, msg_dt, ext))
+                        #file_path = os.path.join('bills/', '{}_{}{}'.format(fname, msg_dt, ext))
+                        file_path = os.path.join('bills/', f'{fname}_{msg_dt}{ext}')
                         if not os.path.isfile(file_path):
-                            fpart = open(file_path, 'wb')
-                            fpart.write(part.get_payload(decode=True))
-                            fpart.close()
+                            with open(file_path, 'wb') as fpart:
+                                fpart.write(part.get_payload(decode=True))
                         #subject = str(msg).split("Subject: ", 1)[1].split("\nTo:", 1)[0]
                         logging.info('Downloaded "%s" from email titled "%s".', file_name, subj_str)
                         self.read_xml(file_path)
@@ -231,6 +258,7 @@ if __name__ == '__main__':
     if OWEN:
         if ARGS.xml:
             OWEN.read_xml(ARGS.xml)
+            OWEN.bill['msg_dt'] = None  # DEBUG
             OWEN.xml_db()
         else:
             logging.info('Start app')
