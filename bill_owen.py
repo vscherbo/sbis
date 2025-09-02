@@ -109,6 +109,7 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
     def xml_db(self):
         """ Save xml doc to PG """
         #logging.debug('bill=%s', self.bill)
+        self.set_session(autocommit=True)
         loc_sql = self.curs.mogrify(self.INSERT_DOC,
                                     (self.bill['schet'],
                                      self.bill['msg_dt'],
@@ -128,6 +129,9 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
             ins_res = self.curs.fetchone()
             if ins_res is not None:
                 inserted_id = ins_res[0]
+                logging.debug('inserted_id=%s', inserted_id)
+        else:
+            logging.error('ERROR INSERT doc loc_sql')
         if inserted_id:
             # items
             """
@@ -137,6 +141,9 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
             """
             logging.debug('items_table=%s', self.items_table)
             for item_row in self.items_table:
+                loc_srok = item_row.get('srok')
+                if loc_srok == '':
+                    loc_srok = None
                 loc_sql = self.curs.mogrify(self.INSERT_ITEM,
                                             (inserted_id,
                                              item_row['code'],
@@ -146,13 +153,16 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
                                              item_row['price_skidka'],
                                              item_row['summa'],
                                              item_row['nds'],
-                                             item_row.get('srok'),
+                                             loc_srok,  # item_row.get('srok'),
                                              item_row.get('FULL_NAME'),
                                              item_row.get('STRANA'),
                                              item_row.get('GTD')
                                             ))
                 logging.debug('loc_sql=%s', str(loc_sql, 'utf-8'))
-                self.do_query(loc_sql, reconnect=True)
+                if self.do_query(loc_sql, reconnect=True):
+                    logging.debug('OK: item inserted')
+                else:
+                    logging.error('ERROR INSERT item loc_sql')
         else:
             logging.warning('Не удалось получить id добавленной в sbis.ow_bill строки')
 
@@ -193,13 +203,16 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
         criteria = '(UNSEEN)'
         # WORKS! criteria = '((BEFORE "25-Oct-2020") (OR (SUBJECT "заявка") (SUBJECT "заказ")))'
         res, data = self.imap_src.uid('search', 'CHARSET UTF-8', criteria.encode())
-        logging.info('Source search result:%s', res)
+        #logging.info('Source search result:%s', res)
+        #logging.debug('Source found data:%s', data)
         for num in data[0].split():
+            #logging.info('num=%s', num)
             res, data = self.imap_src.uid('FETCH', num, '(RFC822)')
             self.get_msg(data)
             logging.info('Message found result=%s: num=%s', res, num)
             if self.msg:
                 subj_str = decode_header_field(self.msg.get('Subject', 'no_Subject'))
+                #logging.debug('subj_str=%s', subj_str)
                 from_str = decode_header_field(self.msg.get('From', 'no_From'))
                 to_str = decode_header_field(self.msg.get('To', 'no_To'))
                 date_str = self.msg.get('Date', 'no_Date')
@@ -214,6 +227,7 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
                              msg_dt)
                 # downloading attachments
                 for part in self.msg.walk():
+                    #logging.debug('for loop part=%s', part)
                     if part.get_content_maintype() == 'multipart':
                         continue
                     if part.get('Content-Disposition') is None:
