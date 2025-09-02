@@ -24,17 +24,18 @@ def parse_xml(root):
     items_table = []
     bill['schet'] = root.attrib['schet']
     bill['type'] = root.attrib.get('type', 'PRE')
-    bill['date_sch'] = root.attrib['date_sch']
-    bill['tax'] = root.attrib['tax']
+    bill['date_sch'] = root.attrib['date_sch'] or None
+    bill['tax'] = root.attrib['tax'] or None
     bill['num_nakl'] = root.attrib['num_nakl']
-    bill['date_got'] = root.attrib.get('date_got')
-    bill['summa'] = root.attrib['summa']
-    bill['nds'] = root.attrib['nds']
-    bill['post_summa'] = root.attrib['post_summa']
-    bill['post_nds'] = root.attrib['post_nds']
+    bill['date_got'] = root.attrib.get('date_got') or None
+    bill['summa'] = root.attrib['summa'] or None
+    bill['nds'] = root.attrib['nds'] or None
+    bill['post_summa'] = root.attrib['post_summa'] or None
+    bill['post_nds'] = root.attrib['post_nds'] or None
 
     goods = root.find('items')
     izd_list = goods.findall('izdelia')
+
     for item in izd_list:
         items_table.append(item.attrib)
 
@@ -46,6 +47,7 @@ def decode_header_field(arg_field):
     #logging.debug('arg_field=%s, type(_field)=%s, _field=%s', arg_field, type(_field), _field)
 
     str_list = []
+
     for tup in _field:
         try:
             tup0 = tup[0].decode(tup[1] or 'ASCII')
@@ -53,6 +55,7 @@ def decode_header_field(arg_field):
             tup0 = tup[0]
         str_list.append(str(tup0))
     _str = ''.join(str_list).replace('\n', '')
+
     return _str
 
 class OwenApp(PGapp, log_app.LogApp):
@@ -66,6 +69,7 @@ class OwenApp(PGapp, log_app.LogApp):
         self.get_config(config_filename)
         super().__init__(self.config['PG']['pg_host'],
                          self.config['PG']['pg_user'])
+
         if self.wait_pg_connect():
             self.set_session(autocommit=True)
         self.imap_src = imaplib.IMAP4_SSL(self.config['imap source']['imap_srv'])
@@ -125,13 +129,16 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
                                     ))
         logging.debug('loc_sql=%s', str(loc_sql, 'utf-8'))
         inserted_id = None
+
         if self.do_query(loc_sql, reconnect=True):
             ins_res = self.curs.fetchone()
+
             if ins_res is not None:
                 inserted_id = ins_res[0]
                 logging.debug('inserted_id=%s', inserted_id)
         else:
             logging.error('ERROR INSERT doc loc_sql')
+
         if inserted_id:
             # items
             """
@@ -140,25 +147,24 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
             FULL_NAME="Термопреобразователь сопротивления ДТС035-100М.В3.2000" STRANA="" GTD=""
             """
             logging.debug('items_table=%s', self.items_table)
+
             for item_row in self.items_table:
-                loc_srok = item_row.get('srok')
-                if loc_srok == '':
-                    loc_srok = None
                 loc_sql = self.curs.mogrify(self.INSERT_ITEM,
                                             (inserted_id,
                                              item_row['code'],
                                              item_row['name'],
-                                             item_row['kolich'],
-                                             item_row['price'],
-                                             item_row['price_skidka'],
-                                             item_row['summa'],
-                                             item_row['nds'],
-                                             loc_srok,  # item_row.get('srok'),
+                                             item_row['kolich'] or None,
+                                             item_row['price'] or None,
+                                             item_row['price_skidka'] or None,
+                                             item_row['summa'] or None,
+                                             item_row['nds'] or None,
+                                             item_row.get('srok') or None,
                                              item_row.get('FULL_NAME'),
                                              item_row.get('STRANA'),
                                              item_row.get('GTD')
                                             ))
                 logging.debug('loc_sql=%s', str(loc_sql, 'utf-8'))
+
                 if self.do_query(loc_sql, reconnect=True):
                     logging.debug('OK: item inserted')
                 else:
@@ -170,6 +176,7 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
         """ Connect to IMAP server"""
         src_type, src_data = self.imap_src.login(self.config['imap source']['login'],
                                                  self.config['imap source']['password'])
+
         if src_type != 'OK':
             logging.error('Login error %s: %s', src_type, src_data[0][1])
 
@@ -181,8 +188,10 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
 
     def get_msg(self, data):
         """ get msg object """
+
         if data[0]:
             loc_data = data[0][1]
+
             if isinstance(loc_data, bytes):
                 self.msg = email.message_from_bytes(loc_data)
             else:
@@ -194,6 +203,7 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
 
     def extract_xml(self):
         """ Move found emails """
+        # pylint: disable=too-many-locals
         self.imap_src.select(mailbox='INBOX', readonly=False)
         #res, data = self.imap_src.uid('search', None, '(BEFORE "25-Sep-2020")')
         #criteria_or = mk_or_crit(SUBJ)
@@ -205,11 +215,13 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
         res, data = self.imap_src.uid('search', 'CHARSET UTF-8', criteria.encode())
         #logging.info('Source search result:%s', res)
         #logging.debug('Source found data:%s', data)
+
         for num in data[0].split():
             #logging.info('num=%s', num)
             res, data = self.imap_src.uid('FETCH', num, '(RFC822)')
             self.get_msg(data)
             logging.info('Message found result=%s: num=%s', res, num)
+
             if self.msg:
                 subj_str = decode_header_field(self.msg.get('Subject', 'no_Subject'))
                 #logging.debug('subj_str=%s', subj_str)
@@ -226,14 +238,18 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
                              date_str,
                              msg_dt)
                 # downloading attachments
+
                 for part in self.msg.walk():
                     #logging.debug('for loop part=%s', part)
+
                     if part.get_content_maintype() == 'multipart':
                         continue
+
                     if part.get('Content-Disposition') is None:
                         continue
                     file_name = decode_header_field(part.get_filename())
                     logging.info('attachment file_name="%s"', file_name)
+
                     if (file_name.startswith('Накладная_СД')\
                         or file_name.startswith('Счет_Д')\
                         or file_name.startswith('Document Д')\
@@ -241,6 +257,7 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
                         fname, ext = os.path.splitext(file_name)
                         #file_path = os.path.join('bills/', '{}_{}{}'.format(fname, msg_dt, ext))
                         file_path = os.path.join('bills/', f'{fname}_{msg_dt}{ext}')
+
                         if not os.path.isfile(file_path):
                             with open(file_path, 'wb') as fpart:
                                 fpart.write(part.get_payload(decode=True))
@@ -254,12 +271,14 @@ VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);"""
 
             # MOVE
             src_type, src_data = self.imap_src.uid('MOVE', num, 'Archive')
+
             if src_type == 'OK':
                 logging.info('MOVED to folder Archive num=%s', num)
             else:
                 logging.error('MOVE error %s: %s', src_type, src_data)
 
         self.imap_src.close()
+
 if __name__ == '__main__':
 
     log_app.PARSER.formatter_class = log_app.argparse.ArgumentDefaultsHelpFormatter
@@ -269,6 +288,7 @@ if __name__ == '__main__':
     ARGS = log_app.PARSER.parse_args()
     #do_nothing()
     OWEN = OwenApp(args=ARGS)
+
     if OWEN:
         if ARGS.xml:
             OWEN.read_xml(ARGS.xml)
